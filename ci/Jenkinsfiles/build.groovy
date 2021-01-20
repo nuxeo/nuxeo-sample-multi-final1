@@ -78,16 +78,18 @@ pipeline {
     label 'jenkins-nuxeo-package-11'
   }
   environment {
-    APP_NAME = 'nuxeo-sample-multi-projects'
     MAVEN_OPTS = "$MAVEN_OPTS -Xms2g -Xmx2g  -XX:+TieredCompilation -XX:TieredStopAtLevel=1"
-    MAVEN_ARGS = '-B -nsu -f final'
+    MAVEN_ARGS = '-B -nsu'
     REFERENCE_BRANCH = 'master'
     SCM_REF = "${getCommitSha1()}"
     VERSION = "${getVersion(REFERENCE_BRANCH)}"
-    NUXEO_DOCKER_REGISTRY = 'docker.packages.nuxeo.com'
+    PERSISTENCE = "${BRANCH_NAME == REFERENCE_BRANCH}"
+    NUXEO_DOCKER_REGISTRY = 'docker-private.packages.nuxeo.com'
+    PREVIEW_NAMESPACE = "nuxeo-sample-final1-${BRANCH_NAME.toLowerCase()}"
+    // APP_NAME and ORG needed for PR preview
+    APP_NAME = 'nuxeo-sample-final1'
     ORG = 'nuxeo'
-    DOCKER_IMAGE_NAME = "nuxeo-sample-final1"
-    PREVIEW_NAMESPACE = "${APP_NAME}-final1"
+    DOCKER_IMAGE_NAME = "${APP_NAME}"
   }
   stages {
     stage('Set Labels') {
@@ -131,14 +133,17 @@ pipeline {
     }
     stage('Build Docker Image') {
       when {
-        branch "${REFERENCE_BRANCH}"
+        anyOf {
+          branch 'PR-*'
+          branch "${REFERENCE_BRANCH}"
+        }
       }
       steps {
         setGitHubBuildStatus('docker/build', 'Build Docker Image', 'PENDING')
         container('maven') {
           echo """
           ------------------------------------------
-          Build Final Sample Docker Images
+          Build Final Sample Docker Image
           ------------------------------------------
           Image tag: ${VERSION}
           Registry: ${DOCKER_REGISTRY}
@@ -152,12 +157,12 @@ pipeline {
                 sh """#!/bin/bash +x
                   CLID=\$(echo -e "${INSTANCE_CLID}" | sed ':a;N;\$!ba;s/\\n/--/g') skaffold build -f ${dockerPath}/skaffold.yaml~gen
                 """
-                def image1 = "${DOCKER_REGISTRY}/${ORG}/${DOCKER_IMAGE_NAME}:${VERSION}"
+                def image = "${DOCKER_REGISTRY}/${ORG}/${DOCKER_IMAGE_NAME}:${VERSION}"
                 sh """
                   # waiting skaffold + kaniko + container-stucture-tests issue
                   #  see https://github.com/GoogleContainerTools/skaffold/issues/3907
-                  docker pull ${image1}
-                  container-structure-test test --image ${image1} --config ${dockerPath}/test/*
+                  docker pull ${image}
+                  container-structure-test test --image ${image} --config ${dockerPath}/test/*
                 """
               }
             }
@@ -200,37 +205,16 @@ pipeline {
         }
       }
     }
-    stage('Deploy Docker Image') {
-      when {
-        expression {
-          branch "${REFERENCE_BRANCH}"
-        }
-      }
-      steps {
-        setGitHubBuildStatus('docker/deploy', 'Deploy Docker Image', 'PENDING')
-        container('maven') {
-          echo """
-          ----------------------------------------
-          Deploy Docker Image
-          ----------------------------------------
-          Image tag: ${VERSION}
-          Registry: ${DOCKER_REGISTRY}
-          """
-          dockerDeploy("${DOCKER_IMAGE_NAME}")
-        }
-      }
-      post {
-        success {
-          setGitHubBuildStatus('docker/deploy', 'Deploy Docker Image', 'SUCCESS')
-        }
-        unsuccessful {
-          setGitHubBuildStatus('docker/deploy', 'Deploy Docker Image', 'FAILURE')
-        }
-      }
-    }
     stage('Deploy Preview') {
       when {
-        branch "${REFERENCE_BRANCH}"
+          // disable on reference branch for now
+          //branch "${REFERENCE_BRANCH}"
+          allOf {
+            branch 'PR-*'
+            expression {
+              return pullRequest.labels.contains('preview')
+            }
+          }
       }
       steps {
         setGitHubBuildStatus('preview', 'Deploy Preview', 'PENDING')
@@ -239,7 +223,7 @@ pipeline {
           ----------------------------------------
           Deploy preview environment
           ----------------------------------------"""
-          dir('final/helm/preview') {
+          dir('helm/preview') {
 
             script {
               // first substitute docker image names and versions
@@ -248,28 +232,56 @@ pipeline {
                 DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME} envsubst < values.yaml.tosubst > values.yaml
               """
 
-              // second scale target namespace if exists and copy secrets to target namespace
+              // second create target namespace (if doesn't exist) and copy secrets to target namespace
+              String currentNs = sh(returnStdout: true, script: 'jx -b ns | sed -r "s/^Using namespace \'([^\']+)\'.+\\$/\\1/"').trim()
               boolean nsExists = sh(returnStatus: true, script: "kubectl get namespace ${PREVIEW_NAMESPACE}") == 0
+              // Only used with jx preview on pr branches
+              String noCommentOpt = '';
               if (nsExists) {
-                // previous preview deployment needs to be scaled to 0 to be replaced correctly
+                noCommentOpt = '--no-comment'
+                // Previous preview deployment needs to be scaled to 0 to be replaced correctly
                 sh "kubectl --namespace ${PREVIEW_NAMESPACE} scale deployment preview --replicas=0"
               } else {
                 sh "kubectl create namespace ${PREVIEW_NAMESPACE}"
               }
-              sh "kubectl --namespace platform get secret kubernetes-docker-cfg -ojsonpath='{.data.\\.dockerconfigjson}' | base64 --decode > /tmp/config.json"
-              sh """kubectl create secret generic kubernetes-docker-cfg \
-                  --namespace=${PREVIEW_NAMESPACE} \
-                  --from-file=.dockerconfigjson=/tmp/config.json \
-                  --type=kubernetes.io/dockerconfigjson --dry-run -o yaml | kubectl apply -f -"""
+              try {
+                boolean isReferenceBranch = BRANCH_NAME == REFERENCE_BRANCH
+                sh "kubectl --namespace platform get secret kubernetes-docker-cfg -ojsonpath='{.data.\\.dockerconfigjson}' | base64 --decode > /tmp/config.json"
+                sh """kubectl create secret generic kubernetes-docker-cfg \
+                    --namespace=${PREVIEW_NAMESPACE} \
+                    --from-file=.dockerconfigjson=/tmp/config.json \
+                    --type=kubernetes.io/dockerconfigjson --dry-run -o yaml | kubectl apply -f -"""
+                String previewCommand = isReferenceBranch ?
+                  // To avoid jx gc cron job, reference branch previews are deployed by calling jx step helm install instead of jx preview
+                  "jx step helm install --namespace ${PREVIEW_NAMESPACE} --name ${PREVIEW_NAMESPACE} --verbose ."
+                  // When deploying a pr preview, we use jx preview which gc the merged pull requests
+                  : "jx preview --namespace ${PREVIEW_NAMESPACE} --verbose --source-url=https://github.com/nuxeo/nuxeo-sample-multi-final1 --preview-health-timeout 15m ${noCommentOpt}"
 
-              // third build and deploy the chart
-              // we use jx preview that gc the merged pull requests
-              sh """
-                jx step helm build --verbose
-                mkdir target1 && helm template . --output-dir target1
-                cp values.yaml target1/
-                jx preview --namespace ${PREVIEW_NAMESPACE} --verbose --source-url=https://github.com/nuxeo/nuxeo-sample-multi-final1 --preview-health-timeout 15m
-              """
+                // third build and deploy the chart
+                // we use jx preview that gc the merged pull requests
+                sh """
+                  helm init --client-only --stable-repo-url=https://charts.helm.sh/stable
+                  helm repo add local-jenkins-x http://jenkins-x-chartmuseum:8080
+                  jx step helm build --verbose
+                  mkdir target && helm template . --output-dir target
+                  ${previewCommand}
+                """
+                if (isReferenceBranch) {
+                  // When not using jx preview, we need to expose the nuxeo url by hand
+                  url = sh(returnStdout: true, script: "kubectl get svc --namespace ${PREVIEW_NAMESPACE} preview -o go-template='{{index .metadata.annotations \"fabric8.io/exposeUrl\"}}'")
+                  echo """
+                    ----------------------------------------
+                    Preview available at: ${url}
+                    ----------------------------------------"""
+                }
+              } catch (err) {
+                echo "Error while deploying preview environment: ${err}"
+                if (!nsExists) {
+                  echo "Deleting namespace ${PREVIEW_NAMESPACE}"
+                  sh "kubectl delete namespace ${PREVIEW_NAMESPACE}"
+                }
+                throw err
+              }
             }
           }
         }
