@@ -1,0 +1,27 @@
+<package type="addon" name="nuxeo-sample-final1-package" version="@VERSION@">
+  <title>Sample Final1 Package</title>
+  <description>
+    <p>Sample Final1 Package for SUPINT-1828 Tests</p>
+  </description>
+  <vendor>Nuxeo</vendor>
+  <installer restart="true" />
+  <uninstaller restart="true" />
+  <nuxeo-validation>none</nuxeo-validation>
+  <production-state>testing</production-state>
+  <supported>false</supported>
+  <!-- needed for private package selection on Studio side -->
+  <platforms>
+    <platform>@NUXEO_TARGET_PLATFORM@</platform>
+  </platforms>
+  <target-platform>
+    <name>@NUXEO_DISTRIBUTION_NAME@</name>
+    <version>@NUXEO_TARGET_RANGE@</version>
+  </target-platform>
+  <license />
+  <license-url />
+  <visibility>DEV</visibility>
+  <dependencies>
+    <package>nuxeo-sample-common-package:@SAMPLE_COMMON_PACKAGE_VERSION@</package>
+    <package>nuxeo-final-test-project:@STUDIO_PROJECT_VERSION@</package>
+  </dependencies>
+</package>

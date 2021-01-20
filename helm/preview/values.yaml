@@ -1,0 +1,42 @@
+expose:
+  Annotations:
+    helm.sh/hook: post-install,post-upgrade
+    helm.sh/hook-delete-policy: hook-succeeded
+  config:
+    # add tls configuration
+    domain: platform.dev.nuxeo.com
+    exposer: Ingress
+    http: true
+    tlsacme: true
+    tlsSecretName: platform-cluster-tls
+    urltemplate: '{{.Service}}-{{.Namespace}}.{{.Domain}}'
+
+cleanup:
+  Args:
+    - --cleanup
+  Annotations:
+    helm.sh/hook: pre-delete
+    helm.sh/hook-delete-policy: hook-succeeded
+
+nuxeo:
+  fullnameOverride: preview
+  nuxeo:
+    podLabels:
+      branch: "$BRANCH_NAME"
+      team: platform
+      resource: pod
+      usage: preview
+    service:
+      annotations:
+        fabric8.io/ingress.annotations: |-
+          nginx.ingress.kubernetes.io/proxy-body-size: 0
+          nginx.ingress.kubernetes.io/server-snippet: ignore_invalid_headers off;
+      labels:
+        branch: "$BRANCH_NAME"
+        team: platform
+        resource: service
+        usage: preview
+    image:
+      repository: $DOCKER_REGISTRY/$ORG/$DOCKER_IMAGE_NAME
+      tag: $VERSION
+      pullSecrets: kubernetes-docker-cfg
