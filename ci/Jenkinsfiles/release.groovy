@@ -19,7 +19,7 @@
  *     Anahide Tchertchian
  */
 properties([
-  [$class: 'GithubProjectProperty', projectUrlStr: 'https://github.com/nuxeo/nuxeo-explorer'],
+  [$class: 'GithubProjectProperty', projectUrlStr: 'https://github.com/nuxeo/nuxeo-sample-multi-final1'],
   [$class: 'BuildDiscarderProperty', strategy: [$class: 'LogRotator', daysToKeepStr: '60', numToKeepStr: '60', artifactNumToKeepStr: '5']],
   disableConcurrentBuilds(),
 ])
@@ -44,13 +44,15 @@ void getNuxeoVersion(version) {
   return version
 }
 
-void getMavenReleaseOptions(Boolean skipTests, Boolean skipFunctionalTests) {
-  def options = '-DskipDocker'
+void replacePomProperty(name, value) {
+  // only replace the first occurrence
+  sh("perl -i -pe '!\$x && s|<${name}>.*?</${name}>|<${name}>${value}</${name}>| && (\$x=1)' pom.xml")
+}
+
+void getMavenReleaseOptions(Boolean skipTests) {
+  def options = ' '
   if (skipTests) {
     return options + ' -DskipTests'
-  }
-  if (skipFunctionalTests) {
-    return options + ' -DskipITs'
   }
   return options
 }
@@ -68,13 +70,13 @@ void dockerPush(String image) {
 }
 
 void dockerDeploy(String releaseVersion) {
-  String imageTag = "nuxeo/nuxeo-explorer:${releaseVersion}"
+  String imageTag = "${ORG}/${DOCKER_IMAGE_NAME}:${releaseVersion}"
   String internalImage = "${DOCKER_REGISTRY}/${imageTag}"
-  String explorerImage = "${NUXEO_DOCKER_REGISTRY}/${imageTag}"
-  echo "Push ${explorerImage}"
+  String image = "${NUXEO_DOCKER_REGISTRY}/${imageTag}"
+  echo "Push ${image}"
   dockerPull(internalImage)
-  dockerTag(internalImage, explorerImage)
-  dockerPush(explorerImage)
+  dockerTag(internalImage, image)
+  dockerPush(image)
 }
 
 pipeline {
@@ -89,30 +91,34 @@ pipeline {
 
   parameters {
     string(name: 'BRANCH_NAME', defaultValue: 'master', description: 'The branch to release')
-    string(name: 'RELEASE_VERSION', defaultValue: '', description: 'Release Explorer version (optional)')
-    string(name: 'NEXT_VERSION', defaultValue: '', description: 'Next Explorer version (next minor version if unset)')
+    string(name: 'RELEASE_VERSION', defaultValue: '', description: 'Release version (optional)')
+    string(name: 'NEXT_VERSION', defaultValue: '', description: 'Next version (next minor version if unset)')
+    string(name: 'STUDIO_PROJECT_VERSION', defaultValue: '', description: 'Version of the Studio project dependency (unchanged if unset). Use keywords `MAJOR`, `MINOR` or `PATCH` for a release to be performed automatically')
+    string(name: 'NEXT_STUDIO_PROJECT_VERSION', defaultValue: '', description: 'Next version of the Studio project version dependency (unchanged if unset)')
+    string(name: 'COMMON_VERSION', defaultValue: '', description: 'Version of the Common Sample package dependency (unchanged if unset)')
+    string(name: 'NEXT_COMMON_VERSION', defaultValue: '', description: 'Next version of the Common Sample package dependency (unchanged if unset)')
     string(name: 'NUXEO_VERSION', defaultValue: '', description: 'Version of the Nuxeo Server dependency (unchanged if unset)')
     booleanParam(name: 'NUXEO_VERSION_IS_PROMOTED', defaultValue: true, description: 'Uncheck if releasing a RC version, against a non-promoted Nuxeo build')
-    string(name: 'NEXT_NUXEO_VERSION', defaultValue: '', description: 'Next Version of the Nuxeo Server dependency (unchanged if unset)')
+    string(name: 'NEXT_NUXEO_VERSION', defaultValue: '', description: 'Next version of the Nuxeo Server dependency (unchanged if unset)')
     string(name: 'JIRA_ISSUE', defaultValue: '', description: 'Id of the Jira issue for this release')
     booleanParam(name: 'SKIP_TESTS', defaultValue: false, description: 'Skip all tests')
-    booleanParam(name: 'SKIP_FUNCTIONAL_TESTS', defaultValue: false, description: 'Skip functional tests')
-    booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry run')
+    booleanParam(name: 'DRY_RUN', defaultValue: true, description: 'Dry run (warning: Studio project automated release would still be performed)')
   }
 
   environment {
     CURRENT_VERSION = getCurrentVersion()
     RELEASE_VERSION = getReleaseVersion(params.RELEASE_VERSION, CURRENT_VERSION)
-    NUXEO_IMAGE_VERSION = getNuxeoVersion(params.NUXEO_VERSION)
     MAVEN_ARGS = '-B -nsu -Prelease'
-    MAVEN_RELEASE_OPTIONS = getMavenReleaseOptions(params.SKIP_TESTS, params.SKIP_FUNCTIONAL_TESTS)
-    MAVEN_SKIP_ENFORCER = ' -Dnuxeo.skip.enforcer=true'
+    MAVEN_RELEASE_OPTIONS = getMavenReleaseOptions(params.SKIP_TESTS)
     CONNECT_PROD_URL = 'https://connect.nuxeo.com/nuxeo'
+    STUDIO_PROJECT_RELEASE_URL = 'https://connect.nuxeo.com/nuxeo/site/studio/v2/project/nuxeo-final-test-project/releases'
+    NUXEO_IMAGE_VERSION = getNuxeoVersion(params.NUXEO_VERSION)
     NUXEO_DOCKER_REGISTRY = 'docker-private.packages.nuxeo.com'
     VERSION = "${RELEASE_VERSION}"
     DRY_RUN = "${params.DRY_RUN}"
     BRANCH_NAME = "${params.BRANCH_NAME}"
-    SLACK_CHANNEL = 'explorer-notifs'
+    ORG = 'nuxeo'
+    DOCKER_IMAGE_NAME = "nuxeo-sample-final1"
   }
 
   stages {
@@ -128,7 +134,14 @@ pipeline {
           Release version:            '${RELEASE_VERSION}'
           Next version:               '${params.NEXT_VERSION}'
 
-          Nuxeo version:              '${NUXEO_IMAGE_VERSION}'
+          Studio project version:     '${params.STUDIO_PROJECT_VERSION}'
+          Next Studio project version:'${params.NEXT_STUDIO_PROJECT_VERSION}'
+
+          Common package version:     '${params.COMMON_VERSION}'
+          Next Common package version:'${params.NEXT_COMMON_VERSION}'
+
+          Nuxeo version:              '${params.NUXEO_VERSION}'
+          Nuxeo version is promoted?  '${params.NUXEO_VERSION_IS_PROMOTED}'
           Next Nuxeo version:         '${params.NEXT_NUXEO_VERSION}'
 
           Jira issue:                 '${params.JIRA_ISSUE}'
@@ -146,6 +159,7 @@ pipeline {
             echo "Aborting release with message: ${message}"
             error(currentBuild.description)
           }
+          currentBuild.description = "Releasing version ${RELEASE_VERSION}"
         }
       }
     }
@@ -186,16 +200,44 @@ pipeline {
               """
             }
             if (!params.NUXEO_VERSION.isEmpty()) {
-              sh """
-                # nuxeo version
-                # only replace the first <version> occurrence
-                perl -i -pe '!\$x && s|<version>.*?</version>|<version>${params.NUXEO_VERSION}</version>| && (\$x=1)' pom.xml
-              """
+              replacePomProperty('version', params.NUXEO_VERSION)
+            }
+            if (!params.COMMON_VERSION.isEmpty()) {
+              replacePomProperty('sample.common.package.version', params.COMMON_VERSION)
+            }
+            def studioVersion = "${params.STUDIO_PROJECT_VERSION}".trim()
+            if (!studioVersion.isEmpty()) {
+              def doRelease = studioVersion.equals('MAJOR') || studioVersion.equals('MINOR') || studioVersion.equals('PATCH')
+              def studioReleaseVersion;
+              if (doRelease) {
+                echo """
+                ----------------------------------------
+                Release Studio Project
+                ----------------------------------------"""
+                withCredentials([usernameColonPassword(credentialsId: 'connect-prod', variable: 'CONNECT_PASS')]) {
+                  def curlCommand = "curl -s -X POST -H 'Content-Type: application/json' -u '$CONNECT_PASS' -d '{ \"revision\": \"master\", \"versionName\": \"${studioVersion}\" }' '$STUDIO_PROJECT_RELEASE_URL'"
+                  def response = sh(script: curlCommand, returnStdout: true).trim()
+                  def json = readJSON text: response
+                  studioReleaseVersion = json.version
+                  if (studioReleaseVersion == null) {
+                    echo "Version cannot be parsed from response: ${response}"
+                    currentBuild.description = 'Error releasing Studio project'
+                    error(currentBuild.description)
+                  }
+                }
+              } else {
+                studioReleaseVersion = studioVersion
+              }
+              echo """
+              ----------------------------------------
+              Replace Studio Project Version: ${studioReleaseVersion}
+              ----------------------------------------"""
+              replacePomProperty('studio.project.version', studioReleaseVersion)
             }
 
             sh """
-              # explorer version
-              mvn ${MAVEN_ARGS} ${MAVEN_SKIP_ENFORCER} versions:set -DnewVersion=${RELEASE_VERSION} -DgenerateBackupPoms=false
+              # project version
+              mvn ${MAVEN_ARGS} versions:set -DnewVersion=${RELEASE_VERSION} -DgenerateBackupPoms=false
             """
           }
         }
@@ -208,7 +250,7 @@ pipeline {
           script {
             echo """
             -------------------------------------------------
-            Release Explorer
+            Release Project
             -------------------------------------------------
             """
             sh """
@@ -217,23 +259,23 @@ pipeline {
 
             echo """
             ----------------------------------------
-            Build Explorer Docker image
+            Build Docker image
             ----------------------------------------
             Image tag: ${RELEASE_VERSION}
             Registry: ${DOCKER_REGISTRY}
             Nuxeo Image tag: ${NUXEO_IMAGE_VERSION}
             """
-            def moduleDir="docker/nuxeo-explorer-docker"
-            // push images to the Jenkins X internal Docker registry
-            sh "envsubst < ${moduleDir}/skaffold.yaml > ${moduleDir}/skaffold.yaml~gen"
+            def dockerPath = 'docker'
+            // push Image to the Jenkins X internal Docker registry
+            sh "envsubst < ${dockerPath}/skaffold.yaml > ${dockerPath}/skaffold.yaml~gen"
             retry(2) {
-              sh "skaffold build -f ${moduleDir}/skaffold.yaml~gen"
+              sh "skaffold build -f ${dockerPath}/skaffold.yaml~gen"
             }
             sh """
               # waiting skaffold + kaniko + container-stucture-tests issue
               #  see https://github.com/GoogleContainerTools/skaffold/issues/3907
               docker pull ${DOCKER_REGISTRY}/nuxeo/nuxeo-explorer:${RELEASE_VERSION}
-              container-structure-test test --image ${DOCKER_REGISTRY}/nuxeo/nuxeo-explorer:${RELEASE_VERSION} --config ${moduleDir}/test/*
+              container-structure-test test --image ${DOCKER_REGISTRY}/${ORG}/${DOCKER_IMAGE_NAME}:${RELEASE_VERSION} --config ${dockerPath}/test/*
             """
 
             def message = "Release ${RELEASE_VERSION}"
@@ -258,13 +300,8 @@ pipeline {
       }
       post {
         always {
-          archiveArtifacts allowEmptyArchive: true, artifacts: '**/*.jar, packages/**/target/nuxeo-*-package-*.zip, **/target/**/*.log, **/target/*.png, **/target/*.html'
+          archiveArtifacts allowEmptyArchive: true, artifacts: '**/*.jar, **/target/nuxeo-*-package-*.zip, **/target/**/*.log, **/target/*.png, **/target/*.html'
           junit allowEmptyResults: true, testResults: '**/target/failsafe-reports/*.xml, **/target/surefire-reports/*.xml'
-          script {
-            if (!params.SKIP_TESTS && !params.SKIP_FUNCTIONAL_TESTS) {
-              findText regexp: ".*ERROR.*", fileSet: "ftests/**/log/server.log", unstableIfFound: true
-            }
-          }
         }
       }
     }
@@ -281,15 +318,19 @@ pipeline {
           ----------------------------------------
           Deploy Maven Artifacts
           ----------------------------------------"""
-          sh "mvn ${MAVEN_ARGS} ${MAVEN_SKIP_ENFORCER} -DskipTests -DskipDocker deploy"
+          sh "mvn ${MAVEN_ARGS} -DskipTests -DskipDocker deploy"
         }
       }
     }
 
     stage('Upload Nuxeo Packages') {
       when {
-        not {
-          environment name: 'DRY_RUN', value: 'true'
+        // maybe there is no point of pushing this package to the Connect private marketplace
+        // not {
+        //   environment name: 'DRY_RUN', value: 'true'
+        // }
+        expression {
+          return false
         }
       }
       steps {
@@ -300,9 +341,9 @@ pipeline {
           ----------------------------------------"""
           withCredentials([usernameColonPassword(credentialsId: 'connect-prod', variable: 'CONNECT_PASS')]) {
             sh """
-              PACKAGES_TO_UPLOAD="packages/nuxeo-*-package/target/nuxeo-*-package*.zip"
+              PACKAGES_TO_UPLOAD="**/target/nuxeo-*-package*.zip"
               for file in \$PACKAGES_TO_UPLOAD ; do
-                curl --fail -i -u "$CONNECT_PASS" -F package=@\$(ls \$file) "$CONNECT_PROD_URL"/site/marketplace/upload?batch=true ;
+                curl --fail -i -u "$CONNECT_PASS" -F package=@\$(ls \$file) "$CONNECT_PROD_URL""/site/marketplace/upload?batch=true&orgId=nuxeo&restrictedToOrgs=nuxeo" ;
               done
             """
           }
@@ -310,7 +351,7 @@ pipeline {
       }
     }
 
-    stage('Promote Docker images') {
+    stage('Promote Docker Image') {
       when {
         not {
           environment name: 'DRY_RUN', value: 'true'
@@ -320,7 +361,7 @@ pipeline {
         container('maven') {
           echo """
           -----------------------------------------------
-          Tag Docker images with version ${RELEASE_VERSION}
+          Tag Docker Image with version ${RELEASE_VERSION}
           -----------------------------------------------
           """
           dockerDeploy("${RELEASE_VERSION}")
@@ -351,10 +392,15 @@ pipeline {
             }
             def nextNuxeoVersion = "${params.NEXT_NUXEO_VERSION}"
             if (!nextNuxeoVersion.isEmpty()) {
-              sh """
-                # only replace the first <version> occurrence
-                perl -i -pe '!\$x && s|<version>.*?</version>|<version>${nextNuxeoVersion}</version>| && (\$x=1)' pom.xml
-              """
+              replacePomProperty('version', nextNuxeoVersion)
+            }
+            def nextCommonVersion = "${params.NEXT_COMMON_VERSION}"
+            if (!nextCommonVersion.isEmpty()) {
+              replacePomProperty('sample.common.package.version', nextCommonVersion)
+            }
+            def nextStudioVersion = "${params.NEXT_STUDIO_PROJECT_VERSION}"
+            if (!nextStudioVersion.isEmpty()) {
+              replacePomProperty('studio.project.version', nextStudioVersion)
             }
 
             def message = "Post release ${RELEASE_VERSION}, update ${CURRENT_VERSION} to ${nextVersion}"
@@ -362,11 +408,12 @@ pipeline {
               message = "${params.JIRA_ISSUE}: ${message}"
             }
             sh """
-              # explorer version
-              mvn ${MAVEN_ARGS} ${MAVEN_SKIP_ENFORCER} versions:set -DnewVersion=${nextVersion} -DgenerateBackupPoms=false
+              # project version
+              mvn ${MAVEN_ARGS} versions:set -DnewVersion=${nextVersion} -DgenerateBackupPoms=false
 
               git commit -a -m "${message}"
             """
+            currentBuild.description = "Released version ${RELEASE_VERSION}"
 
             if (env.DRY_RUN != "true") {
               sh """
@@ -381,30 +428,6 @@ pipeline {
       }
     }
 
-  }
-
-  post {
-    success {
-      script {
-        def message = "Release ${RELEASE_VERSION}"
-        if (env.DRY_RUN != "true") {
-          currentBuild.description = "${message}"
-          slackSend(channel: "${SLACK_CHANNEL}", color: "good", message: "Successfully released nuxeo-explorer ${RELEASE_VERSION} (Nuxeo ${NUXEO_IMAGE_VERSION}) <${BUILD_URL}|#${BUILD_NUMBER}>")
-        } else {
-          currentBuild.description = "(Dry Run) ${message}"
-        }
-      }
-    }
-    unsuccessful {
-      script {
-        if (currentBuild.description?.isEmpty()) {
-          currentBuild.description = "(Attempt) Release ${RELEASE_VERSION}"
-        }
-        if (env.DRY_RUN != "true") {
-          slackSend(channel: "${SLACK_CHANNEL}", color: "danger", message: "Failed to release nuxeo-explorer ${RELEASE_VERSION} (Nuxeo ${NUXEO_IMAGE_VERSION}) <${BUILD_URL}|#${BUILD_NUMBER}>")
-        }
-      }
-    }
   }
 
 }
