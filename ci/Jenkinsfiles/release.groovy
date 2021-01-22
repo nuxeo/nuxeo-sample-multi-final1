@@ -50,7 +50,7 @@ void replacePomProperty(name, value) {
 }
 
 void getMavenReleaseOptions(Boolean skipTests) {
-  def options = ' '
+  def options = '-DskipDocker'
   if (skipTests) {
     return options + ' -DskipTests'
   }
