@@ -11,8 +11,7 @@ The "final1" project relies on "common" 1st level project, was copied from "vert
 
 Its package sets the common package as a package dependency.
 
-Note that dedicated common and vertical packages are needed to be referenced in the final studio project
-application definition too.
+Note that the corresponding common package is needed to be referenced in the studio project application definition.
 
 ## Packaging and Deployment
 

@@ -34,8 +34,10 @@ void setGitHubBuildStatus(String context, String message, String state) {
   ])
 }
 
-void getNuxeoImageVersion() {
-  return sh(returnStdout: true, script: 'mvn org.apache.maven.plugins:maven-help-plugin:3.1.0:evaluate -Dexpression=nuxeo.platform.version -q -DforceStdout').trim();
+void getNuxeoVersion() {
+  container('maven') {
+    return sh(returnStdout: true, script: 'mvn org.apache.maven.plugins:maven-help-plugin:3.1.0:evaluate -Dexpression=nuxeo.platform.version -q -DforceStdout').trim()
+  }
 }
 
 String getVersion(referenceBranch) {
@@ -45,6 +47,13 @@ String getVersion(referenceBranch) {
 
 String getCommitSha1() {
   return sh(returnStdout: true, script: 'git rev-parse HEAD').trim();
+}
+
+String getOneLineClid(clid) {
+  // replace lines by "--"
+  return sh(returnStdout: true, script: """#!/bin/bash +x
+    echo -e \"${clid}\" | sed ':a;N;\$!ba;s/\\n/--/g'
+  """)
 }
 
 void dockerPull(String image) {
@@ -84,11 +93,13 @@ pipeline {
     SCM_REF = "${getCommitSha1()}"
     VERSION = "${getVersion(REFERENCE_BRANCH)}"
     PERSISTENCE = "${BRANCH_NAME == REFERENCE_BRANCH}"
+    NUXEO_IMAGE_VERSION = getNuxeoVersion()
     NUXEO_DOCKER_REGISTRY = 'docker-private.packages.nuxeo.com'
-    PREVIEW_NAMESPACE = "nuxeo-sample-final1-${BRANCH_NAME.toLowerCase()}"
+    SOURCE_URL = 'https://github.com/nuxeo/nuxeo-sample-multi-final1'
     // APP_NAME and ORG needed for PR preview
     APP_NAME = 'nuxeo-sample-final1'
     ORG = 'nuxeo'
+    PREVIEW_NAMESPACE = "${APP_NAME}-${BRANCH_NAME.toLowerCase()}"
     DOCKER_IMAGE_NAME = "${APP_NAME}"
   }
   stages {
@@ -147,24 +158,26 @@ pipeline {
           ------------------------------------------
           Image tag: ${VERSION}
           Registry: ${DOCKER_REGISTRY}
+          Nuxeo Image tag: ${NUXEO_IMAGE_VERSION}
           """
-          withEnv(["NUXEO_IMAGE_VERSION=${getNuxeoImageVersion()}"]) {
-            withCredentials([string(credentialsId: 'instance-clid', variable: 'INSTANCE_CLID')]) {
-              script {
-                // build and push Docker images to the Jenkins X internal Docker registry
-                def dockerPath = 'docker'
-                sh "envsubst < ${dockerPath}/skaffold.yaml > ${dockerPath}/skaffold.yaml~gen"
-                sh """#!/bin/bash +x
-                  CLID=\$(echo -e "${INSTANCE_CLID}" | sed ':a;N;\$!ba;s/\\n/--/g') skaffold build -f ${dockerPath}/skaffold.yaml~gen
-                """
-                def image = "${DOCKER_REGISTRY}/${ORG}/${DOCKER_IMAGE_NAME}:${VERSION}"
-                sh """
-                  # waiting skaffold + kaniko + container-stucture-tests issue
-                  #  see https://github.com/GoogleContainerTools/skaffold/issues/3907
-                  docker pull ${image}
-                  container-structure-test test --image ${image} --config ${dockerPath}/test/*
-                """
-              }
+          withCredentials([string(credentialsId: 'instance-clid', variable: 'INSTANCE_CLID')]) {
+            script {
+              // build and push Docker images to the Jenkins X internal Docker registry
+              def dockerPath = 'docker'
+              sh "envsubst < ${dockerPath}/skaffold.yaml > ${dockerPath}/skaffold.yaml~gen"
+              def clid = getOneLineClid("${INSTANCE_CLID}")
+              sh """#!/bin/bash +x
+                CLID="${clid}" \
+                skaffold build -f ${dockerPath}/skaffold.yaml~gen
+              """
+
+              def image = "${DOCKER_REGISTRY}/${ORG}/${DOCKER_IMAGE_NAME}:${VERSION}"
+              sh """
+                # waiting skaffold + kaniko + container-stucture-tests issue
+                #  see https://github.com/GoogleContainerTools/skaffold/issues/3907
+                docker pull ${image}
+                container-structure-test test --image ${image} --config ${dockerPath}/test/*
+              """
             }
           }
         }
@@ -255,7 +268,7 @@ pipeline {
                   // To avoid jx gc cron job, reference branch previews are deployed by calling jx step helm install instead of jx preview
                   "jx step helm install --namespace ${PREVIEW_NAMESPACE} --name ${PREVIEW_NAMESPACE} --verbose ."
                   // When deploying a pr preview, we use jx preview which gc the merged pull requests
-                  : "jx preview --namespace ${PREVIEW_NAMESPACE} --verbose --source-url=https://github.com/nuxeo/nuxeo-sample-multi-final1 --preview-health-timeout 15m ${noCommentOpt}"
+                  : "jx preview --namespace ${PREVIEW_NAMESPACE} --verbose --source-url=${SOURCE_URL} --preview-health-timeout 15m ${noCommentOpt}"
 
                 // third build and deploy the chart
                 // we use jx preview that gc the merged pull requests
