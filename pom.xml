@@ -39,11 +39,6 @@
   <dependencyManagement>
     <dependencies>
       <dependency>
-        <groupId>org.nuxeo.sample</groupId>
-        <artifactId>nuxeo-sample-common-core</artifactId>
-        <version>${sample.common.core.version}</version>
-      </dependency>
-      <dependency>
         <groupId>nuxeo-studio</groupId>
         <artifactId>nuxeo-final-test-project</artifactId>
         <version>${studio.project.version}</version>
