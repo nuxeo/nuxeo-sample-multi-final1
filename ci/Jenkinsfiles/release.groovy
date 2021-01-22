@@ -36,12 +36,12 @@ void getReleaseVersion(givenVersion, version) {
 }
 
 void getNuxeoVersion(version) {
-  if (version.isEmpty()) {
-    container('maven') {
+  container('maven') {
+    if (version.isEmpty()) {
       return sh(returnStdout: true, script: 'mvn org.apache.maven.plugins:maven-help-plugin:3.1.0:evaluate -Dexpression=nuxeo.platform.version -q -DforceStdout').trim()
     }
+    return version
   }
-  return version
 }
 
 void replacePomProperty(name, value) {
@@ -55,6 +55,13 @@ void getMavenReleaseOptions(Boolean skipTests) {
     return options + ' -DskipTests'
   }
   return options
+}
+
+String getOneLineClid(clid) {
+  // replace lines by "--"
+  return sh(returnStdout: true, script: """#!/bin/bash +x
+    echo -e \"${clid}\" | sed ':a;N;\$!ba;s/\\n/--/g'
+  """)
 }
 
 void dockerPull(String image) {
@@ -141,6 +148,7 @@ pipeline {
           Next Common package version:'${params.NEXT_COMMON_VERSION}'
 
           Nuxeo version:              '${params.NUXEO_VERSION}'
+          Nuxeo image version:        '${NUXEO_IMAGE_VERSION}'
           Nuxeo version is promoted?  '${params.NUXEO_VERSION_IS_PROMOTED}'
           Next Nuxeo version:         '${params.NEXT_NUXEO_VERSION}'
 
@@ -238,6 +246,7 @@ pipeline {
             sh """
               # project version
               mvn ${MAVEN_ARGS} versions:set -DnewVersion=${RELEASE_VERSION} -DgenerateBackupPoms=false
+              git diff
             """
           }
         }
@@ -266,15 +275,20 @@ pipeline {
             Nuxeo Image tag: ${NUXEO_IMAGE_VERSION}
             """
             def dockerPath = 'docker'
-            // push Image to the Jenkins X internal Docker registry
             sh "envsubst < ${dockerPath}/skaffold.yaml > ${dockerPath}/skaffold.yaml~gen"
-            retry(2) {
-              sh "skaffold build -f ${dockerPath}/skaffold.yaml~gen"
+            withCredentials([string(credentialsId: 'instance-clid', variable: 'INSTANCE_CLID')]) {
+              def clid = getOneLineClid("${INSTANCE_CLID}")
+              retry(2) {
+                sh """#!/bin/bash +x
+                  CLID="${clid}" \
+                  skaffold build -f ${dockerPath}/skaffold.yaml~gen
+                """
+              }
             }
             sh """
               # waiting skaffold + kaniko + container-stucture-tests issue
               #  see https://github.com/GoogleContainerTools/skaffold/issues/3907
-              docker pull ${DOCKER_REGISTRY}/nuxeo/nuxeo-explorer:${RELEASE_VERSION}
+              docker pull ${DOCKER_REGISTRY}/${ORG}/${DOCKER_IMAGE_NAME}:${RELEASE_VERSION}
               container-structure-test test --image ${DOCKER_REGISTRY}/${ORG}/${DOCKER_IMAGE_NAME}:${RELEASE_VERSION} --config ${dockerPath}/test/*
             """
 
@@ -283,6 +297,7 @@ pipeline {
               message = "${params.JIRA_ISSUE}: ${message}"
             }
             sh """
+              git diff
               git commit -a -m "${message}"
               git tag -a v${RELEASE_VERSION} -m "${message}"
             """
@@ -411,6 +426,7 @@ pipeline {
               # project version
               mvn ${MAVEN_ARGS} versions:set -DnewVersion=${nextVersion} -DgenerateBackupPoms=false
 
+              git diff
               git commit -a -m "${message}"
             """
             currentBuild.description = "Released version ${RELEASE_VERSION}"
