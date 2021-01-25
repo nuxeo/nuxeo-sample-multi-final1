@@ -4,3 +4,4 @@ final-package.target=
 nuxeo.template.includes=common
 
 org.nuxeo.ecm.instance.description=Nuxeo ECM customized with Final 1 Package
+nuxeo.tenantId=final1
