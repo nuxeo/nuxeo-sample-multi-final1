@@ -21,9 +21,6 @@
       <fileset dir="src/main/resources" />
       <filterset>
         <filter token="VERSION" value="${maven.project.version}" />
-        <filter token="NUXEO_DISTRIBUTION_NAME" value="${nuxeo.distribution.name}" />
-        <filter token="NUXEO_TARGET_RANGE" value="[${nuxeo.target.version},]" />
-        <!-- needed for private package selection on Studio side -->
         <filter token="NUXEO_TARGET_PLATFORM" value="${nuxeo.distribution.name}-${nuxeo.target.version}.*" />
         <filter token="SAMPLE_COMMON_PACKAGE_VERSION" value="${sample.common.package.version}" />
         <filter token="STUDIO_PROJECT_VERSION" value="${studio.project.version}" />
