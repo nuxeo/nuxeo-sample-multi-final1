@@ -13,10 +13,6 @@
   <platforms>
     <platform>@NUXEO_TARGET_PLATFORM@</platform>
   </platforms>
-  <target-platform>
-    <name>@NUXEO_DISTRIBUTION_NAME@</name>
-    <version>@NUXEO_TARGET_RANGE@</version>
-  </target-platform>
   <license />
   <license-url />
   <visibility>DEV</visibility>
