@@ -17,6 +17,8 @@
   <license-url />
   <visibility>DEV</visibility>
   <dependencies>
+    <package>nuxeo-web-ui</package>
+    <package>google-storage</package>
     <package>nuxeo-sample-common-package:@SAMPLE_COMMON_PACKAGE_VERSION@</package>
     <package>nuxeo-final-test-project:@STUDIO_PROJECT_VERSION@</package>
   </dependencies>
