@@ -19,7 +19,6 @@ cleanup:
     helm.sh/hook-delete-policy: hook-succeeded
 
 nuxeo:
-  fullnameOverride: preview
   nuxeo:
     podLabels:
       branch: "$BRANCH_NAME"
@@ -28,6 +27,9 @@ nuxeo:
       usage: preview
     service:
       annotations:
+        fabric8.io/expose: "true"
+        fabric8.io/ingress.path: /nuxeo/
+        fabric8.io/ingress.name: preview
         fabric8.io/ingress.annotations: |-
           nginx.ingress.kubernetes.io/proxy-body-size: 0
           nginx.ingress.kubernetes.io/server-snippet: ignore_invalid_headers off;
@@ -40,3 +42,16 @@ nuxeo:
       repository: $DOCKER_REGISTRY/$ORG/$DOCKER_IMAGE_NAME
       tag: $VERSION
       pullSecrets: kubernetes-docker-cfg
+
+  webui:
+    image:
+      repository: $DOCKER_REGISTRY/$ORG/$DOCKER_WEBUI_IMAGE_NAME
+      tag: $VERSION
+      pullPolicy: Always
+      pullSecrets: kubernetes-docker-cfg
+    service:
+      port: 80
+      annotations:
+        fabric8.io/expose: "true"
+        fabric8.io/ingress.path: /
+        fabric8.io/ingress.name: preview
