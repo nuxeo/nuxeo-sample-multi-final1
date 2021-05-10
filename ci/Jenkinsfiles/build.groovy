@@ -49,13 +49,6 @@ String getCommitSha1() {
   return sh(returnStdout: true, script: 'git rev-parse HEAD').trim();
 }
 
-String getOneLineClid(clid) {
-  // replace lines by "--"
-  return sh(returnStdout: true, script: """#!/bin/bash +x
-    echo -e \"${clid}\" | sed ':a;N;\$!ba;s/\\n/--/g'
-  """)
-}
-
 void dockerPull(String image) {
   sh "docker pull ${image}"
 }
@@ -165,11 +158,16 @@ pipeline {
               // build and push Docker images to the Jenkins X internal Docker registry
               def dockerPath = 'docker'
               sh "envsubst < ${dockerPath}/skaffold.yaml > ${dockerPath}/skaffold.yaml~gen"
-              def clid = getOneLineClid("${INSTANCE_CLID}")
-              sh """#!/bin/bash +x
-                CLID="${clid}" \
-                skaffold build -f ${dockerPath}/skaffold.yaml~gen
-              """
+
+              // replace lines by "--"
+              String clid = sh(returnStdout: true, script: '''#!/bin/bash +x
+              echo -e "${INSTANCE_CLID}" | sed ':a;N;\$!ba;s/\\n/--/g'
+              ''')
+              withEnv(["CLID=${clid}"]) {
+                retry(2) {
+                  sh "skaffold build -f ${dockerPath}/skaffold.yaml~gen"
+                }
+              }
 
               def image = "${DOCKER_REGISTRY}/${ORG}/${DOCKER_IMAGE_NAME}:${VERSION}"
               sh """
