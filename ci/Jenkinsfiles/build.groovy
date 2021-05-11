@@ -75,6 +75,36 @@ void dockerDeploy(String imageName) {
   dockerPush(image)
 }
 
+void kubectlCp(String namespace, String pod, String src, String dst) {
+  sh "kubectl cp ${namespace}/${pod}:${src} ${dst}"
+}
+
+void cp(String src, String dst) {
+  sh "cp ${src} ${dst}"
+}
+
+
+def void waitForNuxeo(String namespace, String name, String url) {
+  script {
+    try {
+      sh "kubectl -n $namespace rollout status deployment $name"
+      sh "wget --tries=10 --retry-connrefused $url/runningstatus"
+    } catch (e) {
+      sh "kubectl -n $namespace get all,configmaps,endpoints,ingresses"
+      sh "kubectl -n $namespace describe pod --selector=app=$name"
+      sh "kubectl -n $namespace logs --selector=app=$name --tail=1000"
+      throw e
+    }
+  }
+}
+
+void skaffoldBuild(String yaml = 'skaffold.yaml') {
+  sh """
+    envsubst < ${yaml} > ${yaml}~gen
+    skaffold build -f ${yaml}~gen
+  """
+}
+
 pipeline {
   agent {
     label 'jenkins-nuxeo-package-11'
@@ -94,6 +124,7 @@ pipeline {
     ORG = 'nuxeo'
     PREVIEW_NAMESPACE = "${APP_NAME}-${BRANCH_NAME.toLowerCase()}"
     DOCKER_IMAGE_NAME = "${APP_NAME}"
+    DOCKER_WEBUI_IMAGE_NAME = "${APP_NAME}-web-ui"
   }
   stages {
     stage('Set Labels') {
@@ -216,6 +247,57 @@ pipeline {
         }
       }
     }
+    stage('Build Web UI Docker Image') {
+      steps {
+        setGitHubBuildStatus('docker/webui', 'Build Web UI Docker Image', 'PENDING')
+        container('maven') {
+          echo """
+          -------------------------
+          Build Web UI Docker image
+          -------------------------
+          """
+          dir('docker/webui') {
+            script {
+              TMP_NAMESPACE = "${APP_NAME}-${BRANCH_NAME.toLowerCase()}-tmp"
+
+              // deploy Nuxeo server image so we can copy nuxeo.war/ui resources from the running pod
+              // as well as the generated configuration from http://<server>/nuxeo/ui/config.jsp
+              sh """
+                kubectl delete namespace ${TMP_NAMESPACE} --ignore-not-found=true
+                kubectl create namespace ${TMP_NAMESPACE}
+                kubectl -n platform get secret kubernetes-docker-cfg -ojsonpath='{.data.\\.dockerconfigjson}' | base64 --decode > /tmp/config.json
+                kubectl create secret generic kubernetes-docker-cfg -n ${TMP_NAMESPACE} --from-file=.dockerconfigjson=/tmp/config.json --type=kubernetes.io/dockerconfigjson
+                kubectl create deployment nuxeo -n ${TMP_NAMESPACE}  --image=${DOCKER_REGISTRY}/${ORG}/${DOCKER_IMAGE_NAME}:${VERSION}
+                kubectl patch deployment nuxeo -n ${TMP_NAMESPACE} --patch '{"spec": {"template": {"spec": {"imagePullSecrets": [{"name": "kubernetes-docker-cfg"}]}}}}'
+                kubectl expose -n ${TMP_NAMESPACE} deployment/nuxeo --type="ClusterIP" --port 8080
+              """
+
+              def nuxeoUrl = "http://nuxeo.${TMP_NAMESPACE}.svc.cluster.local:8080/nuxeo"
+              waitForNuxeo(TMP_NAMESPACE, 'nuxeo', nuxeoUrl)
+
+              def pod = sh(returnStdout: true, script: "kubectl -n ${TMP_NAMESPACE} get pod -l app=nuxeo -o jsonpath=\"{.items[0].metadata.name}\"")
+              kubectlCp(TMP_NAMESPACE, pod, '/opt/nuxeo/server/nxserver/nuxeo.war/ui', 'target/ui')
+
+              // XXX: withCredentials
+              sh "curl -u Administrator:Administrator ${nuxeoUrl}/ui/config.jsp --output target/ui/config.js"
+
+              sh "kubectl delete namespace ${TMP_NAMESPACE}"
+
+              cp('index.html', 'target/ui')
+              skaffoldBuild()
+            }
+          }
+        }
+      }
+      post {
+        success {
+          setGitHubBuildStatus('docker/webui', 'Build Web UI Docker Image', 'SUCCESS')
+        }
+        unsuccessful {
+          setGitHubBuildStatus('docker/webui', 'Build Web UI Docker Image', 'FAILURE')
+        }
+      }
+    }
     stage('Deploy Preview') {
       when {
           // disable on reference branch for now
@@ -240,7 +322,7 @@ pipeline {
               // first substitute docker image names and versions
               sh """
                 cp values.yaml values.yaml.tosubst
-                DOCKER_IMAGE_NAME=${DOCKER_IMAGE_NAME} envsubst < values.yaml.tosubst > values.yaml
+                envsubst < values.yaml.tosubst > values.yaml
               """
 
               // second create target namespace (if doesn't exist) and copy secrets to target namespace
@@ -251,7 +333,7 @@ pipeline {
               if (nsExists) {
                 noCommentOpt = '--no-comment'
                 // Previous preview deployment needs to be scaled to 0 to be replaced correctly
-                sh "kubectl --namespace ${PREVIEW_NAMESPACE} scale deployment preview --replicas=0"
+                sh "kubectl --namespace ${PREVIEW_NAMESPACE} scale deployment preview-nuxeo --replicas=0"
               } else {
                 sh "kubectl create namespace ${PREVIEW_NAMESPACE}"
               }
@@ -279,7 +361,7 @@ pipeline {
                 """
                 if (isReferenceBranch) {
                   // When not using jx preview, we need to expose the nuxeo url by hand
-                  url = sh(returnStdout: true, script: "kubectl get svc --namespace ${PREVIEW_NAMESPACE} preview -o go-template='{{index .metadata.annotations \"fabric8.io/exposeUrl\"}}'")
+                  url = sh(returnStdout: true, script: "kubectl get svc --namespace ${PREVIEW_NAMESPACE} preview-webui -o go-template='{{index .metadata.annotations \"fabric8.io/exposeUrl\"}}'")
                   echo """
                     ----------------------------------------
                     Preview available at: ${url}
